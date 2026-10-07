@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  app:
+    name: Flutter analyze and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.47.x
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze
+      - run: flutter test
+
+  database:
+    name: Apply Supabase migrations
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      PGHOST: localhost
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      # A fresh database, so PostGIS lands in the extensions schema as on Supabase.
+      PGDATABASE: eventify
+    steps:
+      - uses: actions/checkout@v4
+      - run: createdb --maintenance-db=postgres eventify
+      - name: Apply stubs, migrations and seed
+        run: |
+          for f in supabase/tests/ci_supabase_stubs.sql supabase/migrations/*.sql supabase/seed.sql; do
+            echo "Applying $f"
+            psql -v ON_ERROR_STOP=1 -q -f "$f"
+          done
+      - name: Feed returns the seeded events
+        run: |
+          count=$(psql -A -t -c "select count(*) from public.get_feed((select id from public.cities where slug = 'accra'))")
+          test "$count" -eq 3
